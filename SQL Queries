@@ -1,0 +1,307 @@
+USE nhl_games;
+SELECT *
+FROM game; 
+
+SELECT *
+FROM game_goals;
+
+SELECT *
+FROM game_plays;
+
+SELECT *
+FROM game_plays_players;
+
+SELECT *
+FROM game_skater_stats
+where team_id = 53;
+
+SELECT *
+FROM player_info;
+
+SELECT *
+FROM game_teams_stats;
+
+
+SELECT *
+FROM team_info;
+
+# Total Goals Scored by Each Team 
+
+SELECT
+	ti.team_id,
+    CONCAT(shortname, " ", teamName) as Team,
+    SUM(goals) as total_goals
+FROM team_info ti
+JOIN game_teams_stats gts on ti.team_id = gts.team_id
+GROUP BY 1,2
+ORDER BY 3 DESC;
+
+#Updating Team_info table to already have Concatenated Team Name 
+
+ALTER TABLE team_info
+ADD COLUMN Team text;
+UPDATE team_info
+SET Team = CONCAT(shortname, " ", teamName);
+
+#Rewriting Total Goals Scored by Each Team Query with Updated Table 
+
+SELECT
+	ti.team_id,
+    team,
+    SUM(goals) as total_goals
+FROM team_info ti
+JOIN game_teams_stats gts on ti.team_id = gts.team_id
+GROUP BY 1,2
+ORDER BY 3 DESC;
+
+# Total Wins and Loses by Each Team 
+# Win Loss Percantage 
+
+WITH win as 
+	(SELECT 
+		team,
+		COUNT(won) games_won
+	FROM team_info ti
+	JOIN game_teams_stats gts on ti.team_id = gts.team_id
+	WHERE won = "TRUE"
+	GROUP BY 1
+	ORDER BY 2 DESC),
+
+lost as 
+	(SELECT 
+		team,
+		COUNT(won) games_lost
+	FROM team_info ti
+	JOIN game_teams_stats gts on ti.team_id = gts.team_id
+	WHERE won = "False"
+	GROUP BY 1
+	ORDER BY 2 DESC)
+    
+SELECT 
+w.team, 
+games_won,
+games_lost,
+games_won + games_lost as total_games
+FROM win w JOIN lost l on w.team = l.team
+ORDER BY 2 DESC;
+
+# Win Percantage 
+# Optimized Query from Above
+
+WITH team_stats AS (
+    SELECT 
+        ti.team,
+        SUM(CASE WHEN gts.won = 'TRUE' THEN 1 ELSE 0 END) AS games_won,
+        SUM(CASE WHEN gts.won = 'False' THEN 1 ELSE 0 END) AS games_lost,
+        COUNT(won) as total_games
+    FROM team_info ti
+    JOIN game_teams_stats gts ON ti.team_id = gts.team_id
+    GROUP BY ti.team
+)
+SELECT *,
+ROUND(games_won / total_games * 100 , 1)  as win_percentage
+FROM team_stats
+ORDER BY win_percentage DESC;
+
+
+#### Top 5 Goal Scorers 
+
+SELECT 
+	gss.player_id,
+    firstname,
+    lastname,
+	sum(goals) as total_goals
+FROM game_skater_stats gss
+JOIN player_info pi on gss.player_id = pi.player_id
+Group by 1,2,3
+ORDER BY total_goals desc
+LIMIT 5;
+
+SELECT 
+	gss.player_id,
+    firstname,
+    lastname,
+	sum(goals) as total_goals
+FROM game_skater_stats gss
+JOIN player_info pi on gss.player_id = pi.player_id
+JOIN game g on gss.game_id = g.game_id
+where season = 20072008
+Group by 1,2,3
+ORDER BY total_goals desc
+LIMIT 5;
+
+
+#### Top 3 Goal Scorers in Each Team
+
+WITH cte as 
+(SELECT sub.firstname, sub.lastname, sub.team, sub.total_goals,
+RANK() OVER(Partition by sub.team ORDER BY total_goals DESC) as goal_rank
+FROM
+	(
+	SELECT 
+		gss.player_id,
+		firstname,
+		lastname,
+		ti.team_id,
+		ti.team,
+		sum(gss.goals) as total_goals
+	FROM game_skater_stats gss
+	JOIN player_info pi on gss.player_id = pi.player_id
+	JOIN team_info ti on gss.team_id = ti.team_id
+	Group by 1,2,3,4,5
+	ORDER BY total_goals desc
+) sub)
+
+SELECT * FROM CTE
+WHERE goal_rank <= 3;
+
+
+#Optimized Query From Above
+WITH cte AS (
+    SELECT 
+        pi.firstname,
+        pi.lastname,
+        ti.team,
+        SUM(gss.goals) AS total_goals,
+        RANK() OVER (PARTITION BY ti.team ORDER BY SUM(gss.goals) DESC) AS goal_rank
+    FROM game_skater_stats AS gss
+    JOIN player_info AS pi ON gss.player_id = pi.player_id
+    JOIN team_info AS ti ON gss.team_id = ti.team_id
+    GROUP BY 1,2,3)
+SELECT 
+    firstname, lastname, team, total_goals
+FROM cte
+WHERE goal_rank <= 3;
+
+
+
+### Win Percent Different for Teams Home versus Away Games
+
+
+# First get Wins and Loses for Teams at Home Games 
+With home as (
+SELECT  ti.team,
+SUM(CASE WHEN won = "TRUE" then 1 else 0 end) as home_win,
+SUM(CASE WHEN won = "False" then 1 else 0 end) as home_lost,
+Count(*) as total_games 
+FROM game_teams_stats gts
+JOIN team_info ti ON gts.team_id = ti.team_id
+WHERE hoa = "home"
+GROUP BY 1),
+
+# Then for Away Games 
+away as (
+SELECT  ti.team,
+SUM(CASE WHEN won = "TRUE" then 1 else 0 end) as away_win,
+SUM(CASE WHEN won = "False" then 1 else 0 end) as away_lost,
+Count(*) as total_games 
+FROM game_teams_stats gts
+JOIN team_info ti ON gts.team_id = ti.team_id
+WHERE hoa = "away"
+GROUP BY 1)
+
+SELECT 
+	h.team,
+	concat(ROUND((home_win / h.total_games) *100 , 1), "%") as home_win_perc,
+    concat(ROUND((home_lost / h.total_games) *100 , 1), "%") as home_loss_perc,
+    concat(ROUND((away_win / a.total_games) *100 , 1), "%") as away_win_perc,
+    concat(ROUND((away_lost / a.total_games) *100 , 1), "%") as away_lost_perc
+FROM home h
+JOIN away a ON h.team = a.team
+GROUP BY 1;
+
+## Average Win Percentage Across the Entire NHL
+## Rewriting query from above but removing the grouping of Teams  
+
+With home as (
+SELECT
+SUM(CASE WHEN won = "TRUE" then 1 else 0 end) as home_win,
+SUM(CASE WHEN won = "False" then 1 else 0 end) as home_lost,
+Count(*) as total_games 
+FROM game_teams_stats gts
+JOIN team_info ti ON gts.team_id = ti.team_id
+WHERE hoa = "home"),
+
+# Then for Away Games 
+away as (
+SELECT  
+SUM(CASE WHEN won = "TRUE" then 1 else 0 end) as away_win,
+SUM(CASE WHEN won = "False" then 1 else 0 end) as away_lost,
+Count(*) as total_games 
+FROM game_teams_stats gts
+JOIN team_info ti ON gts.team_id = ti.team_id
+WHERE hoa = "away")
+
+SELECT 
+	concat(ROUND((home_win / h.total_games) *100 , 1), "%") as home_win_perc,
+    concat(ROUND((home_lost / h.total_games) *100 , 1), "%") as home_loss_perc,
+    concat(ROUND((away_win / a.total_games) *100 , 1), "%") as away_win_perc,
+    concat(ROUND((away_lost / a.total_games) *100 , 1), "%") as away_lost_perc
+FROM home h
+CROSS JOIN away a ;
+
+#Omptimized Query from above 
+SELECT 
+    CONCAT(ROUND((SUM(CASE WHEN hoa = 'home' AND won = 'TRUE' THEN 1 ELSE 0 END) / SUM(CASE WHEN hoa = 'home' THEN 1 ELSE 0 END)) * 100, 1), '%') AS home_win_perc,
+    CONCAT(ROUND((SUM(CASE WHEN hoa = 'home' AND won = 'False' THEN 1 ELSE 0 END) / SUM(CASE WHEN hoa = 'home' THEN 1 ELSE 0 END)) * 100, 1), '%') AS home_loss_perc,
+    CONCAT(ROUND((SUM(CASE WHEN hoa = 'away' AND won = 'TRUE' THEN 1 ELSE 0 END) / SUM(CASE WHEN hoa = 'away' THEN 1 ELSE 0 END)) * 100, 1), '%') AS away_win_perc,
+    CONCAT(ROUND((SUM(CASE WHEN hoa = 'away' AND won = 'False' THEN 1 ELSE 0 END) / SUM(CASE WHEN hoa = 'away' THEN 1 ELSE 0 END)) * 100, 1), '%') AS away_loss_perc
+FROM game_teams_stats gts
+JOIN team_info ti ON gts.team_id = ti.team_id;
+
+# What Period (1 , 2 or 3) are more goals scored
+
+SELECT period,
+count(event) as total_goals
+FROM game_plays_2
+WHERE event = "Goal" AND period <=3
+GROUP BY 1
+ORDER BY 2 desc;
+# Period 4 is Overtime and Period 5 is Shootout # Can be Excluded
+
+
+# Player with the highest Faceoff Win 
+
+SELECT
+firstname,
+lastname,
+sum(faceoffwins) FaceOff_wins
+FROM game_skater_stats gss
+JOIN  player_info pi on gss.player_id = pi.player_id
+GROUP BY 1,2
+ORDER BY 3 desc;
+
+# Total Goals from Each Team by Strength (Even, Power Play, Short Handed)
+
+SELECT 
+	team,
+	SUM((CASE WHEN strength = "even" then 1 else 0 END)) as even_goal,
+    SUM((CASE WHEN strength = "Power Play" then 1 else 0 END)) as powerplay_goal,
+    SUM((CASE WHEN strength = "Short Handed" then 1 else 0 END)) as shorthand_goal
+FROM game_goals gg
+JOIN game_plays gp on gg.play_id = gp.play_id
+JOIN team_info ti on gp.team_id_for = ti.team_id
+GROUP BY team
+ORDER BY 2 desc;
+
+# Total Goals By Secondary Type (Wrap-around, Slap Shot, Backhand, Wrist Shot, Deflected)
+
+
+# Goalies with the highest average Save Percentage (With at least 100 games played) 
+
+SELECT 
+    firstname,
+    lastname,
+	save_perc
+From 
+	(SELECT 
+		player_id, 
+        ROUND(avg(savepercentage),2) save_perc
+	FROM game_goalie_stats ggs
+	GROUP BY player_id
+	HAVING COUNT(player_id) > 100) sub
+JOIN player_info pi on sub.player_id = pi.player_id
+GROUP BY 1,2,3
+ORDER BY 3 desc;
+
+
